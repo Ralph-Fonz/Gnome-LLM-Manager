@@ -1,0 +1,15 @@
+# Build artifacts
+*.zip
+*.shell-extension.zip
+
+# Compiled schemas
+src/schemas/gschemas.compiled
+
+# Editor / OS
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Node (if tooling added later)
+node_modules/

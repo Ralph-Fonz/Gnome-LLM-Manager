@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="llm-manager">
+  <schema id="org.gnome.shell.extensions.llm-manager"
+          path="/org/gnome/shell/extensions/llm-manager/">
+
+    <key name="poll-interval" type="i">
+      <default>5</default>
+      <summary>Poll interval (seconds)</summary>
+      <description>How often to poll the Ollama API for status updates.</description>
+    </key>
+
+    <key name="ollama-host" type="s">
+      <default>'127.0.0.1'</default>
+      <summary>Ollama host</summary>
+      <description>Hostname or IP of the Ollama server.</description>
+    </key>
+
+    <key name="ollama-port" type="i">
+      <default>11434</default>
+      <summary>Ollama port</summary>
+      <description>Port number of the Ollama server.</description>
+    </key>
+
+    <key name="show-gpu-stats" type="b">
+      <default>true</default>
+      <summary>Show GPU statistics</summary>
+      <description>Display GPU utilization and VRAM usage in the menu.</description>
+    </key>
+
+    <key name="show-cpu-stats" type="b">
+      <default>false</default>
+      <summary>Show CPU statistics</summary>
+      <description>Display CPU load in the menu.</description>
+    </key>
+
+  </schema>
+</schemalist>

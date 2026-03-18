@@ -1,0 +1,9 @@
+{
+  "uuid": "llm-manager@gnome.local",
+  "name": "LLM Manager",
+  "description": "Monitor and control local LLM services (Ollama) from the GNOME top bar.",
+  "shell-version": ["47", "48", "49"],
+  "version": 1,
+  "url": "https://github.com/ctrl-null/gnome-llm-manager",
+  "settings-schema": "org.gnome.shell.extensions.llm-manager"
+}

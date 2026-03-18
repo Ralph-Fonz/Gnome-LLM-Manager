@@ -1,0 +1,75 @@
+/* LLM Manager — panel & popup styles */
+
+/* Panel icon colour states */
+.llm-icon-running {
+    color: #73d216;  /* green — service running, models loaded */
+}
+
+.llm-icon-idle {
+    color: #edd400;  /* yellow — service running, no models */
+}
+
+.llm-icon-stopped {
+    color: #cc0000;  /* red — service stopped */
+}
+
+.llm-icon-unknown {
+    color: #888a85;  /* grey — checking / unknown */
+}
+
+/* Popup menu tweaks */
+.llm-popup-menu {
+    min-width: 320px;
+}
+
+.llm-section-title {
+    font-weight: bold;
+    font-size: 1.1em;
+    padding: 8px 12px 4px;
+    color: #deddda;
+}
+
+.llm-model-item {
+    padding: 4px 16px;
+}
+
+.llm-model-name {
+    font-weight: bold;
+}
+
+.llm-model-detail {
+    font-size: 0.9em;
+    color: #9a9996;
+    padding-left: 8px;
+}
+
+.llm-stat-row {
+    padding: 4px 16px;
+}
+
+.llm-stat-label {
+    font-size: 0.9em;
+    color: #9a9996;
+    min-width: 60px;
+}
+
+.llm-stat-value {
+    font-size: 0.9em;
+    font-weight: bold;
+}
+
+.llm-separator {
+    margin: 4px 0;
+}
+
+.llm-gpu-bar {
+    height: 8px;
+    border-radius: 4px;
+    background-color: #3d3846;
+}
+
+.llm-gpu-bar-fill {
+    height: 8px;
+    border-radius: 4px;
+    background-color: #62a0ea;
+}
