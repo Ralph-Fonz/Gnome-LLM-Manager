@@ -1,4 +1,4 @@
-# LLM Manager — GNOME Shell Extension
+# LLM Manager — Arch Linux - GNOME Shell Extension
 
 A GNOME Shell panel extension to monitor and control local LLM services (Ollama) from the top bar.
 
