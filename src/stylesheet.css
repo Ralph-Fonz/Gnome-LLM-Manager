@@ -73,3 +73,26 @@
     border-radius: 4px;
     background-color: #62a0ea;
 }
+
+/* Pull model entry */
+.llm-pull-box {
+    spacing: 6px;
+    padding: 4px 8px;
+}
+
+.llm-pull-entry {
+    min-width: 160px;
+    border-radius: 6px;
+    padding: 4px 8px;
+    background-color: #3d3846;
+    color: #deddda;
+    caret-color: #deddda;
+}
+
+.llm-pull-btn {
+    border-radius: 6px;
+    padding: 4px 10px;
+    background-color: #1c71d8;
+    color: #ffffff;
+    font-weight: bold;
+}

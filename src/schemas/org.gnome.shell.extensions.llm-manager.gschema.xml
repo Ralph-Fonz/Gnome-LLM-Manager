@@ -33,5 +33,11 @@
       <description>Display CPU load in the menu.</description>
     </key>
 
+    <key name="preferred-gpu-index" type="i">
+      <default>-1</default>
+      <summary>Preferred GPU index (ROCR_VISIBLE_DEVICES)</summary>
+      <description>AMD ROCm GPU index to pass to Ollama. -1 = auto (let Ollama decide).</description>
+    </key>
+
   </schema>
 </schemalist>

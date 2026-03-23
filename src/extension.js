@@ -17,6 +17,79 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
+const GPU_DROPIN_DIR = '/etc/systemd/system/ollama.service.d';
+const GPU_DROPIN_FILE = `${GPU_DROPIN_DIR}/99-gpu.conf`;
+
+// Curated model catalog — shown in "Download a Model" submenus.
+// prefix matching against _availableModels to mark pulled/loaded status.
+const POPULAR_MODELS = [
+    {
+        family: 'Llama 3',
+        models: [
+            {name: 'llama3.2:1b',  desc: '1B · ultralight'},
+            {name: 'llama3.2:3b',  desc: '3B · light'},
+            {name: 'llama3:8b',    desc: '8B · balanced'},
+            {name: 'llama3:70b',   desc: '70B · powerful'},
+        ],
+    },
+    {
+        family: 'Mistral',
+        models: [
+            {name: 'mistral:7b',     desc: '7B'},
+            {name: 'mistral-small',  desc: 'Small'},
+            {name: 'mistral-large',  desc: 'Large'},
+        ],
+    },
+    {
+        family: 'Gemma 3',
+        models: [
+            {name: 'gemma3:1b',   desc: '1B'},
+            {name: 'gemma3:4b',   desc: '4B'},
+            {name: 'gemma3:12b',  desc: '12B'},
+            {name: 'gemma3:27b',  desc: '27B'},
+        ],
+    },
+    {
+        family: 'Phi 4',
+        models: [
+            {name: 'phi4-mini', desc: '3.8B · fast'},
+            {name: 'phi4',      desc: '14B'},
+        ],
+    },
+    {
+        family: 'Qwen 2.5',
+        models: [
+            {name: 'qwen2.5:7b',        desc: '7B'},
+            {name: 'qwen2.5:14b',       desc: '14B'},
+            {name: 'qwen2.5:32b',       desc: '32B'},
+            {name: 'qwen2.5-coder:7b',  desc: 'Coder 7B'},
+        ],
+    },
+    {
+        family: 'DeepSeek R1',
+        models: [
+            {name: 'deepseek-r1:7b',  desc: '7B'},
+            {name: 'deepseek-r1:14b', desc: '14B'},
+            {name: 'deepseek-r1:32b', desc: '32B'},
+        ],
+    },
+    {
+        family: 'Code',
+        models: [
+            {name: 'codellama:7b',       desc: 'CodeLlama 7B'},
+            {name: 'codellama:13b',      desc: 'CodeLlama 13B'},
+            {name: 'qwen2.5-coder:14b',  desc: 'Qwen2.5 Coder 14B'},
+        ],
+    },
+    {
+        family: 'Embeddings',
+        models: [
+            {name: 'nomic-embed-text',   desc: 'Nomic Embed'},
+            {name: 'mxbai-embed-large',  desc: 'MixedBread Embed'},
+        ],
+    },
+];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -74,6 +147,24 @@ function findAmdGpuSysfs() {
     return null;
 }
 
+/**
+ * Get a human-readable GPU name from its sysfs device path.
+ * Falls back to VRAM-based labels (dGPU vs APU) or a generic index label.
+ */
+function getGpuName(devicePath, fallbackIndex) {
+    const product = readSysfs(`${devicePath}/product_name`);
+    if (product) return product;
+
+    const vramTotal = readSysfs(`${devicePath}/mem_info_vram_total`);
+    if (vramTotal) {
+        const gb = parseInt(vramTotal) / (1024 ** 3);
+        return gb < 2
+            ? `Integrated GPU / APU (${gb.toFixed(1)} GB)`
+            : `Discrete GPU (${gb.toFixed(0)} GB VRAM)`;
+    }
+    return `GPU ${fallbackIndex}`;
+}
+
 // ---------------------------------------------------------------------------
 // CPU load tracker (delta-based from /proc/stat)
 // ---------------------------------------------------------------------------
@@ -117,9 +208,12 @@ export default class LlmManagerExtension extends Extension {
         this._settings = this.getSettings();
         this._soupSession = new Soup.Session({timeout: 5});
         this._models = [];
+        this._availableModels = [];
         this._serviceRunning = false;
         this._gpuSysfs = findAmdGpuSysfs();
         this._cpuTracker = new CpuTracker();
+        this._gpus = [];          // detected AMD GPU list [{devicePath, name, rocmIndex}]
+        this._pullingModel = null; // name of model currently being pulled
 
         this._buildUI();
         this._startPolling();
@@ -140,6 +234,8 @@ export default class LlmManagerExtension extends Extension {
 
         this._settings = null;
         this._cpuTracker = null;
+        this._gpus = null;
+        this._pullingModel = null;
     }
 
     // -----------------------------------------------------------------------
@@ -173,9 +269,15 @@ export default class LlmManagerExtension extends Extension {
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // GPU / CPU section
+        // GPU / CPU stats section
         this._statsSection = new PopupMenu.PopupMenuSection();
         menu.addMenuItem(this._statsSection);
+
+        menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // GPU switcher section
+        this._gpuSection = new PopupMenu.PopupMenuSection();
+        menu.addMenuItem(this._gpuSection);
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -219,6 +321,7 @@ export default class LlmManagerExtension extends Extension {
     _poll() {
         this._fetchModels();
         this._updateStats();
+        this._refreshGpuSection();
     }
 
     // -----------------------------------------------------------------------
@@ -396,74 +499,414 @@ export default class LlmManagerExtension extends Extension {
             return;
         }
 
-        // Running/loaded models
-        if (this._models.length > 0) {
-            const header = new PopupMenu.PopupMenuItem('⚡ Loaded Models', {reactive: false});
-            header.label.add_style_class_name('llm-section-title');
-            this._modelSection.addMenuItem(header);
+        // ---- Active / loaded model ----------------------------------------
+        const activeHeader = new PopupMenu.PopupMenuItem('⚡ Active Model', {reactive: false});
+        activeHeader.label.add_style_class_name('llm-section-title');
+        this._modelSection.addMenuItem(activeHeader);
 
+        if (this._models.length > 0) {
             for (const model of this._models) {
                 const name = model.name || 'unknown';
-                const size = model.size ? formatBytes(model.size) : '';
-                const vramStr = model.size_vram ? ` | VRAM: ${formatBytes(model.size_vram)}` : '';
-                const expiresAt = model.expires_at ? ` | expires: ${new Date(model.expires_at).toLocaleTimeString()}` : '';
-
-                const item = new PopupMenu.PopupMenuItem(`  ${name}`);
+                const vramStr = model.size_vram ? `  VRAM: ${formatBytes(model.size_vram)}` : '';
+                const item = new PopupMenu.PopupMenuItem(`  ● ${name}${vramStr}`);
                 item.label.add_style_class_name('llm-model-name');
-
-                // Add detail sublabel
-                if (size || vramStr) {
-                    const detailText = `    ${size}${vramStr}${expiresAt}`;
-                    const detailItem = new PopupMenu.PopupMenuItem(detailText, {reactive: false});
-                    detailItem.label.add_style_class_name('llm-model-detail');
-                    this._modelSection.addMenuItem(item);
-                    this._modelSection.addMenuItem(detailItem);
-
-                    // Fetch context window info on click
-                    item.connect('activate', () => {
-                        this._fetchModelInfo(name, (info) => {
-                            const params = info.details?.parameter_size || '?';
-                            const quant = info.details?.quantization_level || '?';
-                            // Extract context length from model info
-                            let ctxLen = '?';
-                            if (info.model_info) {
-                                // Look through model_info keys for context_length
-                                for (const key of Object.keys(info.model_info)) {
-                                    if (key.includes('context_length')) {
-                                        ctxLen = info.model_info[key].toLocaleString();
-                                        break;
-                                    }
+                item.connect('activate', () => {
+                    this._fetchModelInfo(name, (info) => {
+                        const params = info.details?.parameter_size || '?';
+                        const quant = info.details?.quantization_level || '?';
+                        let ctxLen = '?';
+                        if (info.model_info) {
+                            for (const key of Object.keys(info.model_info)) {
+                                if (key.includes('context_length')) {
+                                    ctxLen = info.model_info[key].toLocaleString();
+                                    break;
                                 }
                             }
-                            Main.notify(
-                                'LLM Manager',
-                                `${name}\nParams: ${params} | Quant: ${quant} | Context: ${ctxLen}`,
-                            );
-                        });
+                        }
+                        Main.notify(
+                            'LLM Manager',
+                            `${name}\nParams: ${params} | Quant: ${quant} | Context: ${ctxLen}`,
+                        );
                     });
+                });
+                this._modelSection.addMenuItem(item);
+
+                const unloadItem = new PopupMenu.PopupMenuItem(`    ○ Unload`);
+                unloadItem.label.add_style_class_name('llm-model-detail');
+                unloadItem.connect('activate', () => this._unloadModel(name));
+                this._modelSection.addMenuItem(unloadItem);
+            }
+        } else {
+            const noneItem = new PopupMenu.PopupMenuItem(
+                '  No model loaded — select one below to load', {reactive: false},
+            );
+            noneItem.label.add_style_class_name('llm-model-detail');
+            this._modelSection.addMenuItem(noneItem);
+        }
+
+        // ---- Locally pulled models (switch between them) -------------------
+        if (this._availableModels && this._availableModels.length > 0) {
+            this._modelSection.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            const localHeader = new PopupMenu.PopupMenuItem('📦 Local Models', {reactive: false});
+            localHeader.label.add_style_class_name('llm-section-title');
+            this._modelSection.addMenuItem(localHeader);
+
+            for (const model of this._availableModels) {
+                const name = model.name || 'unknown';
+                const size = model.size ? `  ${formatBytes(model.size)}` : '';
+                const isLoaded = this._models.some(m => m.name === name);
+
+                if (isLoaded) {
+                    const item = new PopupMenu.PopupMenuItem(`  ⚡ ${name}${size}`, {reactive: false});
+                    item.label.add_style_class_name('llm-model-item');
+                    this._modelSection.addMenuItem(item);
                 } else {
+                    const item = new PopupMenu.PopupMenuItem(`  ○ ${name}${size}`);
+                    item.label.add_style_class_name('llm-model-item');
+                    item.connect('activate', () => this._loadModel(name));
                     this._modelSection.addMenuItem(item);
                 }
             }
         }
 
-        // Available (pulled) models
-        if (this._availableModels && this._availableModels.length > 0) {
-            this._modelSection.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-            const availHeader = new PopupMenu.PopupMenuItem('📦 Available Models', {reactive: false});
-            availHeader.label.add_style_class_name('llm-section-title');
-            this._modelSection.addMenuItem(availHeader);
+        // ---- Download catalog (popular models organised by family) ---------
+        this._modelSection.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        const dlHeader = new PopupMenu.PopupMenuItem('📥 Download a Model', {reactive: false});
+        dlHeader.label.add_style_class_name('llm-section-title');
+        this._modelSection.addMenuItem(dlHeader);
 
-            for (const model of this._availableModels) {
-                const name = model.name || 'unknown';
-                const size = model.size ? formatBytes(model.size) : '';
-                const isLoaded = this._models.some(m => m.name === name);
-                const prefix = isLoaded ? '● ' : '○ ';
+        for (const family of POPULAR_MODELS) {
+            const pulledCount = family.models.filter(m =>
+                this._availableModels?.some(a => a.name === m.name),
+            ).length;
+            const suffix = pulledCount > 0 ? `  (${pulledCount}/${family.models.length})` : '';
+            const sub = new PopupMenu.PopupSubMenuMenuItem(`  ${family.family}${suffix}`);
 
-                const item = new PopupMenu.PopupMenuItem(`  ${prefix}${name}  ${size}`, {reactive: false});
-                item.label.add_style_class_name('llm-model-item');
-                this._modelSection.addMenuItem(item);
+            for (const m of family.models) {
+                const isPulled = this._availableModels?.some(a => a.name === m.name);
+                const isLoaded = this._models.some(a => a.name === m.name);
+                const prefix = isLoaded ? '⚡' : isPulled ? '✓' : '○';
+                const statusNote = isLoaded ? ' (loaded)' : isPulled ? ' (pulled)' : '';
+
+                const modelItem = new PopupMenu.PopupMenuItem(
+                    `  ${prefix} ${m.name}  ${m.desc}${statusNote}`,
+                );
+                if (isLoaded) {
+                    modelItem.connect('activate', () => this._unloadModel(m.name));
+                } else if (isPulled) {
+                    modelItem.connect('activate', () => this._loadModel(m.name));
+                } else {
+                    modelItem.connect('activate', () => this._pullModel(m.name));
+                }
+                sub.menu.addMenuItem(modelItem);
             }
+            this._modelSection.addMenuItem(sub);
+        }
+
+        // Link to full Ollama library
+        const browseItem = new PopupMenu.PopupMenuItem('  🌐 Browse all models…');
+        browseItem.connect('activate', () => {
+            Gio.AppInfo.launch_default_for_uri_async(
+                'https://ollama.com/library', null, null, null,
+            );
+        });
+        this._modelSection.addMenuItem(browseItem);
+
+        // ---- Search / pull entry for custom model names --------------------
+        this._modelSection.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._modelSection.addMenuItem(this._buildPullEntry());
+    }
+
+    // -----------------------------------------------------------------------
+    // Model Load / Unload / Pull
+    // -----------------------------------------------------------------------
+
+    /**
+     * Load a model into Ollama memory (keep_alive = -1 → indefinite).
+     */
+    _loadModel(name) {
+        const url = `${this._getBaseUrl()}/api/generate`;
+        const message = Soup.Message.new('POST', url);
+        const body = JSON.stringify({model: name, prompt: '', keep_alive: -1, stream: false});
+        message.set_request_body_from_bytes(
+            'application/json',
+            new GLib.Bytes(new TextEncoder().encode(body)),
+        );
+        Main.notify('LLM Manager', `Loading ${name}…`);
+        this._soupSession.send_and_read_async(
+            message,
+            GLib.PRIORITY_DEFAULT,
+            null,
+            (_session, result) => {
+                try {
+                    _session.send_and_read_finish(result);
+                    GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+                        this._poll();
+                        return GLib.SOURCE_REMOVE;
+                    });
+                } catch (_e) {
+                    // ignore
+                }
+            },
+        );
+    }
+
+    /**
+     * Unload a model from Ollama memory (keep_alive = 0).
+     */
+    _unloadModel(name) {
+        const url = `${this._getBaseUrl()}/api/generate`;
+        const message = Soup.Message.new('POST', url);
+        const body = JSON.stringify({model: name, prompt: '', keep_alive: 0, stream: false});
+        message.set_request_body_from_bytes(
+            'application/json',
+            new GLib.Bytes(new TextEncoder().encode(body)),
+        );
+        this._soupSession.send_and_read_async(
+            message,
+            GLib.PRIORITY_DEFAULT,
+            null,
+            (_session, result) => {
+                try {
+                    _session.send_and_read_finish(result);
+                    GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+                        this._poll();
+                        return GLib.SOURCE_REMOVE;
+                    });
+                } catch (_e) {
+                    // ignore
+                }
+            },
+        );
+    }
+
+    /**
+     * Pull (download) a model using the `ollama pull` CLI.
+     * Shows a start notification and refreshes when done.
+     */
+    _pullModel(name) {
+        if (this._pullingModel) {
+            Main.notify('LLM Manager', `Already pulling ${this._pullingModel}, please wait.`);
+            return;
+        }
+        this._pullingModel = name;
+        Main.notify('LLM Manager', `Pulling ${name}… (this may take a while)`);
+
+        try {
+            const proc = Gio.Subprocess.new(
+                ['ollama', 'pull', name],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE,
+            );
+            proc.wait_async(null, (_proc, result) => {
+                try {
+                    const success = proc.wait_finish(result);
+                    const exitOk = proc.get_exit_status() === 0;
+                    Main.notify(
+                        'LLM Manager',
+                        exitOk ? `✓ ${name} pulled successfully.` : `✗ Failed to pull ${name}.`,
+                    );
+                } catch (_e) {
+                    Main.notify('LLM Manager', `Pull cancelled or failed for ${name}.`);
+                } finally {
+                    this._pullingModel = null;
+                    GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+                        this._fetchAvailableModels();
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
+            });
+        } catch (e) {
+            this._pullingModel = null;
+            Main.notify('LLM Manager', `Could not start pull: ${e.message}`);
+        }
+    }
+
+    /**
+     * Build a custom menu item containing a text entry + pull button.
+     */
+    _buildPullEntry() {
+        const item = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+
+        const box = new St.BoxLayout({
+            x_expand: true,
+            style_class: 'llm-pull-box',
+        });
+
+        const entry = new St.Entry({
+            x_expand: true,
+            hint_text: 'model:tag  (e.g. llama3:8b)',
+            style_class: 'llm-pull-entry',
+            can_focus: true,
+        });
+
+        const btn = new St.Button({
+            label: '⬇ Pull',
+            style_class: 'llm-pull-btn',
+            can_focus: true,
+        });
+
+        const doPull = () => {
+            const name = entry.get_text().trim();
+            if (name) {
+                entry.set_text('');
+                this._pullModel(name);
+            }
+        };
+
+        entry.clutter_text.connect('activate', doPull);
+        btn.connect('clicked', doPull);
+
+        box.add_child(entry);
+        box.add_child(btn);
+        item.add_child(box);
+        return item;
+    }
+
+    // -----------------------------------------------------------------------
+    // GPU Enumeration & Switching
+    // -----------------------------------------------------------------------
+
+    /**
+     * Enumerate all AMD GPU cards in /sys/class/drm, sorted by card number.
+     * Returns [{devicePath, name, rocmIndex}].
+     */
+    _enumerateGpus() {
+        const gpus = [];
+        const drmDir = '/sys/class/drm';
+        try {
+            const dir = Gio.File.new_for_path(drmDir);
+            const enumerator = dir.enumerate_children(
+                'standard::name,standard::type',
+                Gio.FileQueryInfoFlags.NONE,
+                null,
+            );
+            const cardNames = [];
+            let info;
+            while ((info = enumerator.next_file(null)) !== null) {
+                const name = info.get_name();
+                if (!name.startsWith('card') || name.includes('-')) continue;
+                cardNames.push(name);
+            }
+            cardNames.sort((a, b) => {
+                return parseInt(a.replace('card', '')) - parseInt(b.replace('card', ''));
+            });
+
+            let rocmIdx = 0;
+            for (const cardName of cardNames) {
+                const devicePath = `${drmDir}/${cardName}/device`;
+                if (!GLib.file_test(`${devicePath}/gpu_busy_percent`, GLib.FileTest.EXISTS))
+                    continue;
+                gpus.push({
+                    devicePath,
+                    name: getGpuName(devicePath, rocmIdx),
+                    rocmIndex: rocmIdx,
+                });
+                rocmIdx++;
+            }
+        } catch (_e) {
+            // ignore
+        }
+        return gpus;
+    }
+
+    /**
+     * Re-enumerate GPUs and rebuild the GPU switcher section if the list changed.
+     */
+    _refreshGpuSection() {
+        const newGpus = this._enumerateGpus();
+        const changed =
+            newGpus.length !== this._gpus.length ||
+            newGpus.some((g, i) => g.devicePath !== this._gpus[i]?.devicePath);
+
+        if (changed) {
+            this._gpus = newGpus;
+            // Keep primary sysfs path up to date for stats display
+            const preferred = this._settings.get_int('preferred-gpu-index');
+            const idx = preferred >= 0 && preferred < this._gpus.length ? preferred : 0;
+            this._gpuSysfs = this._gpus[idx]?.devicePath ?? null;
+            this._buildGpuSection();
+        }
+    }
+
+    /**
+     * Rebuild the GPU radio-button section in the menu.
+     */
+    _buildGpuSection() {
+        this._gpuSection.removeAll();
+
+        if (this._gpus.length === 0) return;
+
+        const header = new PopupMenu.PopupMenuItem('🖥 GPU for Ollama', {reactive: false});
+        header.label.add_style_class_name('llm-section-title');
+        this._gpuSection.addMenuItem(header);
+
+        const selectedIdx = this._settings.get_int('preferred-gpu-index');
+
+        // "Auto" option (index = -1)
+        const autoLabel = selectedIdx === -1 ? '● Auto (let Ollama decide)' : '○ Auto (let Ollama decide)';
+        const autoItem = new PopupMenu.PopupMenuItem(`  ${autoLabel}`);
+        autoItem.connect('activate', () => this._switchGpu(-1));
+        this._gpuSection.addMenuItem(autoItem);
+
+        for (const gpu of this._gpus) {
+            const active = selectedIdx === gpu.rocmIndex;
+            const prefix = active ? '●' : '○';
+            const item = new PopupMenu.PopupMenuItem(`  ${prefix} ${gpu.name}`);
+            item.connect('activate', () => this._switchGpu(gpu.rocmIndex));
+            this._gpuSection.addMenuItem(item);
+        }
+    }
+
+    /**
+     * Switch Ollama to a specific AMD ROCm GPU index (or -1 for auto).
+     * Writes (or removes) a systemd drop-in and restarts the service.
+     */
+    _switchGpu(rocmIndex) {
+        this._settings.set_int('preferred-gpu-index', rocmIndex);
+
+        // Update stats sysfs path immediately
+        if (rocmIndex >= 0 && rocmIndex < this._gpus.length) {
+            this._gpuSysfs = this._gpus[rocmIndex].devicePath;
+        } else if (this._gpus.length > 0) {
+            this._gpuSysfs = this._gpus[0].devicePath;
+        }
+        this._buildGpuSection();
+
+        let script;
+        if (rocmIndex >= 0) {
+            script = [
+                `mkdir -p "${GPU_DROPIN_DIR}"`,
+                `printf '[Service]\\nEnvironment="ROCR_VISIBLE_DEVICES=${rocmIndex}"\\n'` +
+                    ` > "${GPU_DROPIN_FILE}"`,
+                'systemctl daemon-reload',
+                'systemctl restart ollama',
+            ].join(' && ');
+        } else {
+            script = [
+                `rm -f "${GPU_DROPIN_FILE}"`,
+                'systemctl daemon-reload',
+                'systemctl restart ollama',
+            ].join(' && ');
+        }
+
+        try {
+            const proc = Gio.Subprocess.new(
+                ['pkexec', 'sh', '-c', script],
+                Gio.SubprocessFlags.NONE,
+            );
+            proc.wait_async(null, (_proc, result) => {
+                try {
+                    proc.wait_finish(result);
+                    GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
+                        this._poll();
+                        return GLib.SOURCE_REMOVE;
+                    });
+                } catch (_e) {
+                    // user may have cancelled pkexec
+                }
+            });
+        } catch (e) {
+            log(`[LLM Manager] Failed to switch GPU: ${e.message}`);
         }
     }
 

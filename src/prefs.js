@@ -93,5 +93,30 @@ export default class LlmManagerPrefs extends ExtensionPreferences {
         });
         settings.bind('show-cpu-stats', cpuRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         monGroup.add(cpuRow);
+
+        // --- GPU group ---
+        const gpuGroup = new Adw.PreferencesGroup({
+            title: 'GPU Selection',
+            description: 'Choose which AMD GPU Ollama uses (sets ROCR_VISIBLE_DEVICES). ' +
+                'Requires a service restart (from the panel menu) to take effect. ' +
+                '-1 = Auto.',
+        });
+        page.add(gpuGroup);
+
+        const gpuAdj = new Gtk.Adjustment({
+            lower: -1,
+            upper: 7,
+            step_increment: 1,
+            value: settings.get_int('preferred-gpu-index'),
+        });
+        const gpuRow = new Adw.SpinRow({
+            title: 'GPU Index (ROCR_VISIBLE_DEVICES)',
+            subtitle: '-1 = Auto  |  0 = first AMD GPU  |  1 = second AMD GPU  …',
+            adjustment: gpuAdj,
+        });
+        gpuRow.connect('notify::value', () => {
+            settings.set_int('preferred-gpu-index', gpuRow.get_value());
+        });
+        gpuGroup.add(gpuRow);
     }
 }
