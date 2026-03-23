@@ -52,3 +52,7 @@ gnome-extensions prefs llm-manager@gnome.local
 ## License
 
 MIT
+
+## Extension Menu Example 
+
+![LLM Manager GNOME Shell menu](images/llm-manager-menu.png)
