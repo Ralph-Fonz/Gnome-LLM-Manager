@@ -13,7 +13,7 @@ A GNOME Shell panel extension to monitor and control local LLM services (Ollama)
 
 ## Requirements
 
-- GNOME Shell 47–49
+- GNOME Shell 47–50
 - [Ollama](https://ollama.com) installed and configured as a systemd service
 - AMD GPU (for GPU stats — optional)
 

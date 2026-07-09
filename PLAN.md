@@ -7,7 +7,7 @@
 | Component       | Version / Detail                          |
 |-----------------|-------------------------------------------|
 | OS              | Manjaro (Arch-based)                      |
-| GNOME Shell     | 49.4 (ESModules, GNOME 45+ API)          |
+| GNOME Shell     | 50.2 (ESModules, GNOME 45+ API)          |
 | GJS             | 1.86.0                                    |
 | Ollama          | 0.18.1 (`/usr/local/bin/ollama`)          |
 | GPU             | AMD RX 6600 XT (eGPU via OCuLink)        |
@@ -91,7 +91,7 @@ gnome-llm-manager/
 ## Phases
 
 ### Phase 1 — Scaffold & Panel Icon
-1. Create `metadata.json` targeting GNOME Shell 49.
+1. Create `metadata.json` targeting GNOME Shell 50.
 2. Implement `extension.js` with a `PanelMenu.Button`.
 3. Add a symbolic SVG icon.
 4. Icon colour reflects Ollama service state:

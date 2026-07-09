@@ -109,14 +109,14 @@ export default class LlmManagerPrefs extends ExtensionPreferences {
             step_increment: 1,
             value: settings.get_int('preferred-gpu-index'),
         });
-        const gpuRow = new Adw.SpinRow({
+        const gpuIndexRow = new Adw.SpinRow({
             title: 'GPU Index (ROCR_VISIBLE_DEVICES)',
             subtitle: '-1 = Auto  |  0 = first AMD GPU  |  1 = second AMD GPU  …',
             adjustment: gpuAdj,
         });
-        gpuRow.connect('notify::value', () => {
-            settings.set_int('preferred-gpu-index', gpuRow.get_value());
+        gpuIndexRow.connect('notify::value', () => {
+            settings.set_int('preferred-gpu-index', gpuIndexRow.get_value());
         });
-        gpuGroup.add(gpuRow);
+        gpuGroup.add(gpuIndexRow);
     }
 }
